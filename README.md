@@ -27,9 +27,8 @@ A simple Python script to download all resources, presentations, documents, and 
 
 ## Usage
 
-### Windows (Batch or PowerShell)
-- Double-click `run_downloader.bat`
-- OR right-click `run_downloader.ps1` and select "Run with PowerShell"
+### Windows (Batch File)
+Double-click `run_downloader.bat` or run it from command prompt.
 
 ### Manual Python Execution
 ```bash
