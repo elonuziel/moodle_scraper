@@ -7,6 +7,26 @@ from collections import OrderedDict
 import requests
 from bs4 import BeautifulSoup
 
+# Enable ANSI escape colors on Windows consoles
+if sys.platform == "win32":
+    os.system("")
+
+class Style:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    CYAN = "\033[36m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
+    WHITE = "\033[37m"
+
+def print_banner():
+    print(f"\n{Style.CYAN}{'=' * 70}{Style.RESET}")
+    print(f"{Style.BOLD}{Style.WHITE}           MOODLE COURSE MATERIAL DOWNLOADER{Style.RESET}")
+    print(f"{Style.DIM}   Download presentations, documents & folders organized by section{Style.RESET}")
+    print(f"{Style.CYAN}{'=' * 70}{Style.RESET}\n")
+
 def sanitize_filename(name: str, max_length: int = 200) -> str:
     """
     Removes invalid characters for Windows/Linux/macOS file systems and prevents path traversal.
@@ -15,9 +35,9 @@ def sanitize_filename(name: str, max_length: int = 200) -> str:
         return "unnamed_file"
     
     name = name.strip()
-    # Prevent path traversal by stripping leading dots and slashes
+    # Prevent path traversal
     name = re.sub(r'^[./\\]+', '', name)
-    # Replace directory separators and forbidden filesystem characters (\ / * ? : " < > |)
+    # Replace directory separators and forbidden characters (\ / * ? : " < > |)
     name = re.sub(r'[\\/*?:"<>|]', '_', name)
     # Remove control characters and clean trailing spaces/dots
     name = re.sub(r'[\x00-\x1f\x7f]', '', name).strip('. ')
@@ -26,6 +46,16 @@ def sanitize_filename(name: str, max_length: int = 200) -> str:
         return "unnamed_file"
         
     return name[:max_length]
+
+def format_size(bytes_num: int) -> str:
+    """Formats bytes into human readable KB/MB/GB."""
+    if not bytes_num:
+        return ""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if bytes_num < 1024.0:
+            return f"{bytes_num:.1f} {unit}" if unit != 'B' else f"{bytes_num} B"
+        bytes_num /= 1024.0
+    return f"{bytes_num:.1f} TB"
 
 def get_filename_from_cd(cd: str) -> str:
     """
@@ -46,7 +76,6 @@ def get_filename_from_cd(cd: str) -> str:
     match_quoted = re.search(r'filename\s*=\s*"([^"]+)"', cd, re.IGNORECASE)
     if match_quoted:
         raw_val = match_quoted.group(1).strip()
-        # Fix Moodle's UTF-8 filenames sent as raw bytes over HTTP latin1 headers
         try:
             raw_val = raw_val.encode('latin1').decode('utf-8')
         except Exception:
@@ -76,22 +105,25 @@ def setup_session(moodle_cookie: str) -> requests.Session:
         'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
     })
     
-    # Handle full cookie header (e.g. "MoodleSession=abc; other=123") or raw session value
+    # Clean surrounding quotes/whitespace
+    moodle_cookie = moodle_cookie.strip().strip('"\'')
+    
+    # Handle full cookie string or key-value pairs
     if '=' in moodle_cookie:
         for part in moodle_cookie.split(';'):
             if '=' in part:
                 k, v = part.strip().split('=', 1)
                 session.cookies.set(k.strip(), v.strip())
     else:
-        session.cookies.set('MoodleSession', moodle_cookie.strip())
+        session.cookies.set('MoodleSession', moodle_cookie)
         
     return session
 
 def stream_download_file(session: requests.Session, url: str, target_dir: str, default_name: str = None, 
-                         method: str = 'GET', data: dict = None, initial_res: requests.Response = None) -> str:
+                         method: str = 'GET', data: dict = None, initial_res: requests.Response = None) -> tuple[str, int]:
     """
     Streams a file download to target_dir. Resolves filename from headers or URL.
-    Avoids filename collisions by appending (1), (2), etc.
+    Returns (filename, bytes_downloaded) or (None, 0) on failure.
     """
     try:
         if initial_res is not None:
@@ -124,113 +156,162 @@ def stream_download_file(session: requests.Session, url: str, target_dir: str, d
             filepath = os.path.join(target_dir, f"{base} ({counter}){ext}")
             counter += 1
             
+        total_downloaded = 0
         with open(filepath, 'wb') as f:
             for chunk in res.iter_content(chunk_size=65536):
                 if chunk:
                     f.write(chunk)
+                    total_downloaded += len(chunk)
                     
-        return os.path.basename(filepath)
+        return os.path.basename(filepath), total_downloaded
     except Exception as e:
-        print(f"   [!] Failed download from {url}: {e}")
-        return None
+        print(f"   {Style.RED}[!] Failed download from {url}: {e}{Style.RESET}")
+        return None, 0
+
+def prompt_course_url(cli_url: str = None) -> tuple[str, str, str]:
+    """
+    Guides the user to input their Moodle course URL and extracts the ID and domain.
+    """
+    course_url = cli_url.strip() if cli_url else ""
+    
+    if not course_url:
+        print(f"{Style.BOLD}--- STEP 1: MOODLE COURSE URL ---{Style.RESET}")
+        print("Paste the full link of your course page.")
+        print(f"Example: {Style.CYAN}https://moodle.ruppin.ac.il/course/view.php?id=1234{Style.RESET}\n")
+        
+        course_url = input(f"{Style.BOLD}Course URL > {Style.RESET}").strip()
+        while not course_url:
+            print(f"{Style.RED}Please enter a valid URL.{Style.RESET}")
+            course_url = input(f"{Style.BOLD}Course URL > {Style.RESET}").strip()
+
+    # Extract ID and domain
+    parsed = urlparse(course_url)
+    domain = parsed.netloc or "moodle"
+    
+    match = re.search(r'id=(\d+)', course_url)
+    course_id = match.group(1) if match else ""
+
+    if not cli_url:
+        if course_id:
+            print(f"\n{Style.GREEN}[+] Detected Course ID:{Style.RESET} {Style.BOLD}{course_id}{Style.RESET} on {Style.CYAN}{domain}{Style.RESET}")
+            confirm = input(f"Press {Style.BOLD}ENTER{Style.RESET} to confirm, or type the correct numeric ID: ").strip()
+            if confirm:
+                course_id = confirm
+        else:
+            course_id = input(f"\n{Style.YELLOW}Could not extract ID automatically. Enter numeric Course ID: {Style.RESET}").strip()
+
+    while not course_id or not course_id.isdigit():
+        print(f"{Style.RED}Error: Course ID must be numeric.{Style.RESET}")
+        course_id = input("Enter numeric Course ID: ").strip()
+
+    # Reconstruct course URL
+    base_url = course_url.split('?')[0] if '?' in course_url else course_url
+    clean_course_url = f"{base_url}?id={course_id}"
+    
+    return clean_course_url, course_id, domain
+
+def prompt_cookie(cli_cookie: str = None) -> str:
+    """
+    Presents clear, foolproof instructions for finding the MoodleSession cookie in DevTools.
+    """
+    if cli_cookie:
+        return cli_cookie.strip()
+        
+    print(f"\n{Style.BOLD}--- STEP 2: GET YOUR MOODLESESSION COOKIE ---{Style.RESET}")
+    print("Moodle protects session cookies with 'HttpOnly', so it must be copied from DevTools:\n")
+    print(f"  1. In your browser (Chrome / Edge / Firefox), open your Moodle page.")
+    print(f"  2. Press {Style.BOLD}F12{Style.RESET} (or right-click anywhere and choose {Style.BOLD}Inspect{Style.RESET}).")
+    print(f"  3. Go to the {Style.BOLD}Application{Style.RESET} tab at the top (in Firefox: {Style.BOLD}Storage{Style.RESET}).")
+    print(f"     {Style.DIM}(If hidden, click the '>>' arrow on the top bar of DevTools){Style.RESET}")
+    print(f"  4. In the left sidebar under {Style.BOLD}Cookies{Style.RESET}, click on your Moodle site.")
+    print(f"  5. Find {Style.CYAN}MoodleSession{Style.RESET}, double-click its {Style.BOLD}Value{Style.RESET}, and copy it ({Style.BOLD}Ctrl+C{Style.RESET}).\n")
+
+    cookie_val = input(f"{Style.BOLD}Paste MoodleSession value here > {Style.RESET}").strip()
+    while not cookie_val:
+        print(f"{Style.RED}The cookie cannot be empty.{Style.RESET}")
+        cookie_val = input(f"{Style.BOLD}Paste MoodleSession value here > {Style.RESET}").strip()
+        
+    return cookie_val
 
 def main():
     parser = argparse.ArgumentParser(description="Moodle Course Downloader")
     parser.add_argument('--url', help="Full Moodle course URL (e.g., https://moodle.ruppin.ac.il/course/view.php?id=1234)")
     parser.add_argument('--cookie', help="MoodleSession cookie value or full Cookie header")
-    parser.add_argument('--output', help="Output directory path (optional)")
+    parser.add_argument('--output', help="Custom output directory path (optional)")
     args = parser.parse_args()
 
-    print("=== Moodle Course Downloader ===")
-    print("This script will download all resources and folders from a Moodle course.")
-    print("-" * 80)
-    print()
+    print_banner()
 
     # Step 1: Course URL
-    course_url = args.url.strip() if args.url else ""
-    if not course_url:
-        print("STEP 1: MOODLE COURSE URL")
-        print("Please paste the full URL of your Moodle course page.")
-        print("Example: https://moodle.ruppin.ac.il/course/view.php?id=1234")
-        print()
-        course_url = input("Enter the full Moodle course URL: ").strip()
-        while not course_url:
-            print("Please enter a valid URL.")
-            course_url = input("Enter the full Moodle course URL: ").strip()
+    course_url, course_id, domain = prompt_course_url(args.url)
 
-    # Extract ID from URL
-    match = re.search(r'id=(\d+)', course_url)
-    course_id = match.group(1) if match else ""
+    # Step 2: Cookie Authentication Loop
+    session = None
+    course_title = "Moodle Course"
+    user_name = None
 
-    if not args.url:
-        if course_id:
-            print(f"\n[?] Extracted Course ID: {course_id}")
-            confirm = input("Press ENTER to confirm, or type the correct ID: ").strip()
-            if confirm:
-                course_id = confirm
-        if not course_id:
-            course_id = input("\nCould not extract ID automatically. Please enter the numeric Course ID: ").strip()
+    while True:
+        moodle_cookie = prompt_cookie(args.cookie)
+        session = setup_session(moodle_cookie)
 
-    if not course_id or not course_id.isdigit():
-        print("Error: Course ID must be numeric.")
-        return
+        print(f"\nConnecting to {Style.CYAN}{domain}{Style.RESET} ...")
+        try:
+            response = session.get(course_url)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"{Style.RED}Failed to reach {course_url}: {e}{Style.RESET}")
+            if args.cookie:
+                return
+            continue
 
-    # Reconstruct course URL in case ID changed
-    base_url = course_url.split('?')[0] if '?' in course_url else course_url
-    course_url = f"{base_url}?id={course_id}"
+        soup = BeautifulSoup(response.content, 'html.parser')
 
-    # Step 2: Cookie
-    moodle_cookie = args.cookie.strip() if args.cookie else ""
-    if not moodle_cookie:
-        print(f"\n[OK] Using Course ID: {course_id}")
-        print()
-        print("STEP 2: GET YOUR LOGIN COOKIE")
-        print("To download files, this script needs your active Moodle login.")
-        print("  1. Log into your Moodle in a web browser.")
-        print("  2. Press F12 to open Developer Tools.")
-        print("  3. Go to the Application tab (or Storage in Firefox).")
-        print("  4. Click on 'Cookies' on the left side.")
-        print("  5. Find the row named 'MoodleSession' and copy its exact Value.")
-        print("     (Example: 6ir67p4doaf4pb0gb4oavl6puq)")
-        print()
-        moodle_cookie = input("Paste your MoodleSession cookie value: ").strip()
-        while not moodle_cookie:
-            print("The cookie cannot be empty. We need it to bypass the login screen.")
-            moodle_cookie = input("Paste your MoodleSession cookie value: ").strip()
+        # Check for login redirection or login form
+        if "login" in response.url.lower() or soup.find('form', action=re.compile(r"login", re.I)):
+            print(f"\n{Style.RED}[!] ERROR: Authentication failed.{Style.RESET}")
+            print("Your MoodleSession cookie was invalid or expired.")
+            print("Please make sure you are logged into Moodle in your browser and copied the fresh value.\n")
+            if args.cookie:
+                return
+            args.cookie = None  # Prompt interactively again
+            continue
 
-    session = setup_session(moodle_cookie)
+        # Extract Course Name & User name
+        title_tag = soup.find('h1') or soup.find('title')
+        if title_tag:
+            raw_title = title_tag.get_text(strip=True)
+            course_title = re.sub(r'^(Course:\s*|\s*קורס:\s*)', '', raw_title, flags=re.IGNORECASE)
+            course_title = course_title.split(' | ')[0].split(' - ')[0].strip()
 
+        user_tag = soup.find(class_=re.compile(r'usertext|user-name|avatarmenu'))
+        if user_tag:
+            user_name = user_tag.get_text(strip=True)
+
+        break
+
+    # Setup Download Directory
     download_dir = args.output if args.output else f"moodle_course_{course_id}"
     os.makedirs(download_dir, exist_ok=True)
-    print(f"\nFiles will be saved to: {os.path.abspath(download_dir)}")
+    abs_download_path = os.path.abspath(download_dir)
 
-    print(f"Accessing {course_url} ...")
-    try:
-        response = session.get(course_url)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        print(f"Failed to access course: {e}")
-        return
+    # Clean Pre-flight Summary
+    print(f"\n{Style.GREEN}{'=' * 70}{Style.RESET}")
+    print(f"{Style.BOLD}{Style.GREEN}[+] AUTHENTICATED SUCCESSFULLY{Style.RESET}")
+    print(f"  {Style.BOLD}Course:{Style.RESET}       {course_title}")
+    if user_name:
+        print(f"  {Style.BOLD}User:{Style.RESET}         {user_name}")
+    print(f"  {Style.BOLD}Site:{Style.RESET}         {domain} (Course ID: {course_id})")
+    print(f"  {Style.BOLD}Folder:{Style.RESET}       {abs_download_path}")
+    print(f"{Style.GREEN}{'=' * 70}{Style.RESET}\n")
 
-    soup = BeautifulSoup(response.content, 'html.parser')
-
-    # Check for login redirection or login form
-    if "login" in response.url.lower() or soup.find('form', action=re.compile(r"login", re.I)):
-        print("\n[!] ERROR: Authentication failed.")
-        print("Your MoodleSession cookie might be invalid, expired, or incorrect.")
-        print("Please log into Moodle in your browser, and copy the fresh 'MoodleSession' cookie.")
-        return
-
-    # Find all resource and folder links anywhere on the page
+    # Find downloadable resource and folder links
     all_links = soup.find_all('a', href=re.compile(r'/mod/(resource|folder)/view\.php\?id='))
     if not all_links:
-        print("Could not find any downloadable resources or folders in this course.")
-        print("Make sure you are enrolled, the course has files, and the ID is correct.")
+        print(f"{Style.YELLOW}[!] No downloadable resources or folders found on this course page.{Style.RESET}")
+        print("Please check that materials are published and that you are enrolled.")
         return
 
-    print(f"Found {len(all_links)} downloadable items.")
-
-    # Group links by section (preserving order)
+    # Group links by section (preserving page order)
     grouped_links = OrderedDict()
 
     for a in all_links:
@@ -238,7 +319,6 @@ def main():
         href = urljoin(course_url, raw_href)
 
         section_name = "General"
-        # Match Moodle 3/4 course sections
         parent_section = a.find_parent(
             ['li', 'div', 'section'],
             class_=lambda c: c and ('course-section' in c or ('section' in c and 'main' in c) or 'section-item' in c)
@@ -263,54 +343,68 @@ def main():
         if href not in grouped_links[safe_section_name]:
             grouped_links[safe_section_name].append(href)
 
-    for safe_section_name, links in grouped_links.items():
-        print(f"\n--- Processing '{safe_section_name}' ({len(links)} items) ---")
+    total_items = sum(len(links) for links in grouped_links.values())
+    print(f"Found {len(grouped_links)} sections with {total_items} downloadable links.\n")
+
+    # Tracking metrics
+    total_downloaded_files = 0
+    total_downloaded_bytes = 0
+
+    # Process each section
+    for section_idx, (safe_section_name, links) in enumerate(grouped_links.items(), 1):
+        print(f"{Style.BOLD}{Style.CYAN}[{section_idx}/{len(grouped_links)}] Section: {safe_section_name}{Style.RESET} {Style.DIM}({len(links)} items){Style.RESET}")
         section_dir = os.path.join(download_dir, safe_section_name)
         os.makedirs(section_dir, exist_ok=True)
 
-        for link in links:
+        for item_idx, link in enumerate(links, 1):
+            is_last = (item_idx == len(links))
+            prefix = "└──" if is_last else "├──"
+
             try:
-                print(f"Evaluating link: {link}")
                 res = session.get(link, allow_redirects=True, stream=True)
 
-                # 1. Direct file download (e.g. forcedownload or direct redirect to file)
+                # 1. Direct file download
                 cd = res.headers.get('Content-Disposition')
                 content_type = res.headers.get('Content-Type', '').lower()
                 is_html = 'text/html' in content_type
 
                 if cd and ('filename' in cd or 'attachment' in cd) or (not is_html and res.status_code == 200):
-                    saved_name = stream_download_file(session, link, section_dir, initial_res=res)
+                    saved_name, byte_count = stream_download_file(session, link, section_dir, initial_res=res)
                     if saved_name:
-                        print(f"   [+] Downloaded direct file: {saved_name}")
+                        size_str = f" {Style.DIM}[{format_size(byte_count)}]{Style.RESET}" if byte_count else ""
+                        print(f"  {prefix} {Style.GREEN}[+] Downloaded:{Style.RESET} {saved_name}{size_str}")
+                        total_downloaded_files += 1
+                        total_downloaded_bytes += byte_count
                     continue
 
-                # 2. If it's an HTML page, parse for folders or embedded resources
+                # 2. Parse HTML page for folder archives or embedded files
                 page_soup = BeautifulSoup(res.content, 'html.parser')
 
-                # Check for "Download folder" button (Moodle mod/folder)
+                # Check for Moodle mod/folder "Download folder" button
                 folder_form = page_soup.find('form', action=re.compile(r'folder/download_folder\.php', re.I))
                 if folder_form:
                     action = urljoin(link, folder_form.get('action', ''))
                     data = {inp.get('name'): inp.get('value', '') for inp in folder_form.find_all('input') if inp.get('name')}
 
-                    print("   [*] Found folder. Downloading ZIP archive...")
-                    saved_name = stream_download_file(session, action, section_dir, 
-                                                      default_name=f"folder_{link.split('=')[-1]}.zip", 
-                                                      method='POST', data=data)
+                    saved_name, byte_count = stream_download_file(session, action, section_dir, 
+                                                                  default_name=f"folder_{link.split('=')[-1]}.zip", 
+                                                                  method='POST', data=data)
                     if saved_name:
-                        print(f"   [+] Downloaded folder: {saved_name}")
+                        size_str = f" {Style.DIM}[{format_size(byte_count)}]{Style.RESET}" if byte_count else ""
+                        print(f"  {prefix} {Style.GREEN}[+] Downloaded Folder ZIP:{Style.RESET} {saved_name}{size_str}")
+                        total_downloaded_files += 1
+                        total_downloaded_bytes += byte_count
                     continue
 
-                # Check for embedded or listed file links (pluginfile.php)
+                # Check for embedded pluginfile.php links
                 file_elements = page_soup.find_all('a', href=re.compile(r'pluginfile\.php'))
-                # Also check iframe / object / embed tags in case resources are embedded in an iframe
                 for tag in page_soup.find_all(['iframe', 'embed'], src=re.compile(r'pluginfile\.php')):
                     file_elements.append(tag)
                 for tag in page_soup.find_all('object', data=re.compile(r'pluginfile\.php')):
                     file_elements.append(tag)
 
-                downloaded_something = False
-                seen_file_urls = set()
+                downloaded_in_link = False
+                seen_urls = set()
 
                 for elem in file_elements:
                     raw_file_url = elem.get('href') or elem.get('src') or elem.get('data')
@@ -318,26 +412,37 @@ def main():
                         continue
 
                     file_url = urljoin(link, raw_file_url)
-                    if file_url in seen_file_urls:
+                    if file_url in seen_urls:
                         continue
-                    seen_file_urls.add(file_url)
+                    seen_urls.add(file_url)
 
-                    # Ensure forcedownload is added to bypass the in-browser viewer
+                    # Ensure forcedownload=1 is set
                     if '?forcedownload=1' not in file_url and '&forcedownload=1' not in file_url:
                         file_url += "&forcedownload=1" if '?' in file_url else "?forcedownload=1"
 
-                    saved_name = stream_download_file(session, file_url, section_dir)
+                    saved_name, byte_count = stream_download_file(session, file_url, section_dir)
                     if saved_name:
-                        print(f"   [+] Downloaded file: {saved_name}")
-                        downloaded_something = True
+                        size_str = f" {Style.DIM}[{format_size(byte_count)}]{Style.RESET}" if byte_count else ""
+                        print(f"  {prefix} {Style.GREEN}[+] Downloaded:{Style.RESET} {saved_name}{size_str}")
+                        total_downloaded_files += 1
+                        total_downloaded_bytes += byte_count
+                        downloaded_in_link = True
 
-                if not downloaded_something:
-                    print("   [-] Did not find any downloadable content at this link.")
+                if not downloaded_in_link:
+                    print(f"  {prefix} {Style.YELLOW}[-] No downloadable content found{Style.RESET}")
 
             except Exception as e:
-                print(f"   [!] Error processing {link}: {e}")
+                print(f"  {prefix} {Style.RED}[!] Error:{Style.RESET} {e}")
 
-    print(f"\nDone! All files have been downloaded to the '{download_dir}' directory.")
+        print()
+
+    # Final Summary
+    print(f"{Style.CYAN}{'=' * 70}{Style.RESET}")
+    print(f"{Style.BOLD}{Style.GREEN}   ALL DONE! DOWNLOAD COMPLETED{Style.RESET}")
+    print(f"   {Style.BOLD}Total Files:{Style.RESET}  {total_downloaded_files}")
+    print(f"   {Style.BOLD}Total Size:{Style.RESET}   {format_size(total_downloaded_bytes)}")
+    print(f"   {Style.BOLD}Saved To:{Style.RESET}     {abs_download_path}")
+    print(f"{Style.CYAN}{'=' * 70}{Style.RESET}\n")
 
 if __name__ == "__main__":
     main()

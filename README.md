@@ -49,11 +49,14 @@ python moodle_downloader.py --url "https://moodle.ruppin.ac.il/course/view.php?i
 2. **Course ID Confirmation**: The script extracts the course ID automatically
    - Press ENTER to confirm or enter a different ID if needed
 
-3. **Login Cookie**: You need to provide your MoodleSession cookie
-   - Log into Moodle in your browser
-   - Press F12 → Application/Storage tab → Cookies → MoodleSession → Copy the Value
+3. **Login Cookie**: The script needs your active Moodle session:
+   - Log into Moodle in your browser (Chrome / Edge / Firefox)
+   - Press `F12` (or right-click → **Inspect**)
+   - Go to the **Application** tab at the top (in Firefox: **Storage**)
+   - In the left sidebar under **Cookies**, click your Moodle domain
+   - Copy the **Value** of `MoodleSession` (double-click value → `Ctrl+C`) and paste it into the script
 
-4. **Download**: The script will download all files and organize them into folders
+4. **Download**: The script automatically validates your session, displays the course name and user details, and downloads all files structured neatly by section with progress and size indicators.
 
 ## Output
 

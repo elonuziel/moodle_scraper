@@ -1,28 +1,23 @@
 @echo off
+setlocal
 
-:: Set console colors (bright white on blue background)
-color 9F
+:: Check if python is available
+python --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo.
+    echo [!] ERROR: Python is not installed or not found on your PATH.
+    echo Please install Python 3.8+ from https://www.python.org/
+    echo Make sure to check "Add python.exe to PATH" during installation.
+    echo.
+    pause
+    exit /b 1
+)
 
-echo ================================================================
-echo              MOODLE COURSE DOWNLOADER                 
-echo ================================================================
-echo.
-echo WARNING: This tool requires Python to be installed on your computer.
-echo If Python is not installed, please download it from https://www.python.org/
-echo.
-echo Installing dependencies...
+:: Install dependencies quietly
 python -m pip install -r "%~dp0requirements.txt" --quiet
 
-echo.
-echo Starting downloader...
-echo ================================================================
-echo.
-
-:: Run the python script
+:: Run the downloader
 python "%~dp0moodle_downloader.py"
 
 echo.
-echo ================================================================
-echo   ALL DONE! Press any key to exit...
-echo ================================================================
-pause >nul
+pause
