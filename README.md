@@ -4,13 +4,13 @@ A simple Python script to download all resources, presentations, documents, and 
 
 ## Features
 
-- Downloads all downloadable resources and folders from a Moodle course
+- **High-Speed Parallel Downloads**: Uses multi-threading (5 concurrent workers) for fast downloads
+- **Auto-Unpack Folder Archives**: Automatically extracts downloaded Moodle folder ZIP archives into clean subdirectories
 - **Nested Files Support**: Downloads attached homework PDFs, solution sheets, and page documents from inside Moodle Assignments (`mod/assign`) and Pages (`mod/page`)
-- Organizes files neatly by course sections/topics
-- Handles individual files, embedded attachments, and folder ZIP archives
-- Supports UTF-8 / Hebrew / international filenames
-- Automatic course ID extraction from URLs
-- Interactive prompts with CLI argument support (`--url`, `--cookie`, `--nested`, `--output`)
+- **Organized Course Structure**: Organizes all materials neatly by course sections/topics
+- **UTF-8 & International Support**: Safely handles Hebrew, Arabic, and Unicode filenames on Windows/Linux/macOS
+- **Automatic Course ID Extraction**: Parses course IDs from URLs automatically
+- **Flexible CLI Options**: Supports `--url`, `--cookie`, `--nested`, `--threads`, `--no-unpack`, and `--output` flags
 
 ## Requirements
 
