@@ -7,9 +7,14 @@ from collections import OrderedDict
 import requests
 from bs4 import BeautifulSoup
 
-# Enable ANSI escape colors on Windows consoles
+# Ensure UTF-8 console output for Hebrew and international filenames on Windows
 if sys.platform == "win32":
     os.system("")
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 class Style:
     RESET = "\033[0m"
@@ -24,7 +29,7 @@ class Style:
 def print_banner():
     print(f"\n{Style.CYAN}{'=' * 70}{Style.RESET}")
     print(f"{Style.BOLD}{Style.WHITE}           MOODLE COURSE MATERIAL DOWNLOADER{Style.RESET}")
-    print(f"{Style.DIM}   Download presentations, documents & folders organized by section{Style.RESET}")
+    print(f"{Style.DIM}   Download presentations, documents, assignments & solutions{Style.RESET}")
     print(f"{Style.CYAN}{'=' * 70}{Style.RESET}\n")
 
 def sanitize_filename(name: str, max_length: int = 200) -> str:
@@ -105,10 +110,8 @@ def setup_session(moodle_cookie: str) -> requests.Session:
         'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
     })
     
-    # Clean surrounding quotes/whitespace
     moodle_cookie = moodle_cookie.strip().strip('"\'')
     
-    # Handle full cookie string or key-value pairs
     if '=' in moodle_cookie:
         for part in moodle_cookie.split(';'):
             if '=' in part:
@@ -142,7 +145,6 @@ def stream_download_file(session: requests.Session, url: str, target_dir: str, d
             if default_name:
                 filename = sanitize_filename(default_name)
             else:
-                # Derive from final response URL path
                 parsed = urlparse(res.url)
                 path_last = parsed.path.split('/')[-1]
                 filename = sanitize_filename(unquote(path_last)) if path_last else "downloaded_file"
@@ -168,10 +170,23 @@ def stream_download_file(session: requests.Session, url: str, target_dir: str, d
         print(f"   {Style.RED}[!] Failed download from {url}: {e}{Style.RESET}")
         return None, 0
 
+def extract_clean_title(a_tag) -> str:
+    """
+    Extracts the clean activity title without Moodle accessibility tags (e.g. 'קובץ' or 'Assignment').
+    """
+    instance_span = a_tag.find(class_='instancename')
+    if instance_span:
+        # Clone or strip hidden spans
+        for hide in instance_span.find_all(class_=re.compile(r'accesshide|sr-only')):
+            hide.decompose()
+        title = instance_span.get_text(strip=True)
+    else:
+        title = a_tag.get_text(strip=True)
+        
+    title = re.sub(r'(קובץ|File|תיקייה|Folder|מטלה|Assignment|דף|Page|קישור|URL)\s*$', '', title, flags=re.IGNORECASE).strip()
+    return title or "Activity"
+
 def prompt_course_url(cli_url: str = None) -> tuple[str, str, str]:
-    """
-    Guides the user to input their Moodle course URL and extracts the ID and domain.
-    """
     course_url = cli_url.strip() if cli_url else ""
     
     if not course_url:
@@ -184,7 +199,6 @@ def prompt_course_url(cli_url: str = None) -> tuple[str, str, str]:
             print(f"{Style.RED}Please enter a valid URL.{Style.RESET}")
             course_url = input(f"{Style.BOLD}Course URL > {Style.RESET}").strip()
 
-    # Extract ID and domain
     parsed = urlparse(course_url)
     domain = parsed.netloc or "moodle"
     
@@ -204,16 +218,12 @@ def prompt_course_url(cli_url: str = None) -> tuple[str, str, str]:
         print(f"{Style.RED}Error: Course ID must be numeric.{Style.RESET}")
         course_id = input("Enter numeric Course ID: ").strip()
 
-    # Reconstruct course URL
     base_url = course_url.split('?')[0] if '?' in course_url else course_url
     clean_course_url = f"{base_url}?id={course_id}"
     
     return clean_course_url, course_id, domain
 
 def prompt_cookie(cli_cookie: str = None) -> str:
-    """
-    Presents clear, foolproof instructions for finding the MoodleSession cookie in DevTools.
-    """
     if cli_cookie:
         return cli_cookie.strip()
         
@@ -233,11 +243,67 @@ def prompt_cookie(cli_cookie: str = None) -> str:
         
     return cookie_val
 
+def prompt_nested_option(cli_nested: bool = None) -> bool:
+    """
+    Asks user whether to include nested files (Assignments, Solution sheets, Pages).
+    """
+    if cli_nested is not None:
+        return cli_nested
+        
+    print(f"\n{Style.BOLD}--- STEP 3: DOWNLOAD PREFERENCES ---{Style.RESET}")
+    print(f"Include nested files? ({Style.CYAN}Assignments, Homework PDFs, Solution sheets, Pages{Style.RESET})")
+    choice = input(f"{Style.BOLD}Download nested files? [Y/n] (default: Y) > {Style.RESET}").strip().lower()
+    
+    if choice in ['n', 'no', '0']:
+        return False
+    return True
+
+def find_downloadable_files_in_page(page_soup: BeautifulSoup, base_page_url: str) -> list[str]:
+    """
+    Scans a Moodle sub-page (Assignment, Page, Resource) for all downloadable file links.
+    """
+    found_urls = []
+    seen = set()
+
+    # Match pluginfile.php, draftfile.php, or direct document extensions
+    file_re = re.compile(r'pluginfile\.php|draftfile\.php|\.(pdf|docx?|pptx?|xlsx?|zip|rar|7z|py|c|cpp|txt|tar|gz|mat|m)(\?|$)', re.I)
+
+    # 1. <a> tags
+    for a in page_soup.find_all('a', href=file_re):
+        raw_href = a.get('href', '')
+        if raw_href and not raw_href.startswith('javascript:'):
+            full = urljoin(base_page_url, raw_href)
+            if full not in seen:
+                seen.add(full)
+                found_urls.append(full)
+
+    # 2. <iframe> / <embed> / <object>
+    for tag in page_soup.find_all(['iframe', 'embed'], src=file_re):
+        src = tag.get('src', '')
+        if src:
+            full = urljoin(base_page_url, src)
+            if full not in seen:
+                seen.add(full)
+                found_urls.append(full)
+                
+    for tag in page_soup.find_all('object', data=file_re):
+        data_url = tag.get('data', '')
+        if data_url:
+            full = urljoin(base_page_url, data_url)
+            if full not in seen:
+                seen.add(full)
+                found_urls.append(full)
+
+    return found_urls
+
 def main():
     parser = argparse.ArgumentParser(description="Moodle Course Downloader")
     parser.add_argument('--url', help="Full Moodle course URL (e.g., https://moodle.ruppin.ac.il/course/view.php?id=1234)")
     parser.add_argument('--cookie', help="MoodleSession cookie value or full Cookie header")
     parser.add_argument('--output', help="Custom output directory path (optional)")
+    parser.add_argument('--nested', dest='nested', action='store_true', help="Include nested files (Assignments, Solution sheets, Pages)")
+    parser.add_argument('--no-nested', dest='nested', action='store_false', help="Only download direct resources and folders")
+    parser.set_defaults(nested=None)
     args = parser.parse_args()
 
     print_banner()
@@ -289,6 +355,9 @@ def main():
 
         break
 
+    # Step 3: Nested Files Option
+    include_nested = prompt_nested_option(args.nested)
+
     # Setup Download Directory
     download_dir = args.output if args.output else f"moodle_course_{course_id}"
     os.makedirs(download_dir, exist_ok=True)
@@ -301,22 +370,34 @@ def main():
     if user_name:
         print(f"  {Style.BOLD}User:{Style.RESET}         {user_name}")
     print(f"  {Style.BOLD}Site:{Style.RESET}         {domain} (Course ID: {course_id})")
+    print(f"  {Style.BOLD}Nested Files:{Style.RESET} {'Enabled (Assignments, Solutions, Pages)' if include_nested else 'Disabled (Resources & Folders only)'}")
     print(f"  {Style.BOLD}Folder:{Style.RESET}       {abs_download_path}")
     print(f"{Style.GREEN}{'=' * 70}{Style.RESET}\n")
 
-    # Find downloadable resource and folder links
-    all_links = soup.find_all('a', href=re.compile(r'/mod/(resource|folder)/view\.php\?id='))
-    if not all_links:
-        print(f"{Style.YELLOW}[!] No downloadable resources or folders found on this course page.{Style.RESET}")
+    # Define module regex pattern based on user preference
+    if include_nested:
+        mod_regex = re.compile(r'/mod/(resource|folder|assign|page|url|h5pactivity)/view\.php\?id=\d+')
+    else:
+        mod_regex = re.compile(r'/mod/(resource|folder)/view\.php\?id=\d+')
+
+    all_activity_links = soup.find_all('a', href=mod_regex)
+    
+    if not all_activity_links:
+        print(f"{Style.YELLOW}[!] No downloadable resources or activities found on this course page.{Style.RESET}")
         print("Please check that materials are published and that you are enrolled.")
         return
 
     # Group links by section (preserving page order)
     grouped_links = OrderedDict()
 
-    for a in all_links:
+    for a in all_activity_links:
         raw_href = a['href']
         href = urljoin(course_url, raw_href)
+        activity_title = extract_clean_title(a)
+
+        # Detect module type
+        mod_match = re.search(r'/mod/(\w+)/', href)
+        mod_type = mod_match.group(1) if mod_match else 'resource'
 
         section_name = "General"
         parent_section = a.find_parent(
@@ -340,30 +421,47 @@ def main():
         if safe_section_name not in grouped_links:
             grouped_links[safe_section_name] = []
 
-        if href not in grouped_links[safe_section_name]:
-            grouped_links[safe_section_name].append(href)
+        # Avoid duplicate links in the same section
+        if not any(item['href'] == href for item in grouped_links[safe_section_name]):
+            grouped_links[safe_section_name].append({
+                'href': href,
+                'title': activity_title,
+                'mod_type': mod_type
+            })
 
-    total_items = sum(len(links) for links in grouped_links.values())
-    print(f"Found {len(grouped_links)} sections with {total_items} downloadable links.\n")
+    total_items = sum(len(items) for items in grouped_links.values())
+    print(f"Found {len(grouped_links)} sections with {total_items} items to process.\n")
 
     # Tracking metrics
     total_downloaded_files = 0
     total_downloaded_bytes = 0
 
     # Process each section
-    for section_idx, (safe_section_name, links) in enumerate(grouped_links.items(), 1):
-        print(f"{Style.BOLD}{Style.CYAN}[{section_idx}/{len(grouped_links)}] Section: {safe_section_name}{Style.RESET} {Style.DIM}({len(links)} items){Style.RESET}")
+    for section_idx, (safe_section_name, items) in enumerate(grouped_links.items(), 1):
+        print(f"{Style.BOLD}{Style.CYAN}[{section_idx}/{len(grouped_links)}] Section: {safe_section_name}{Style.RESET} {Style.DIM}({len(items)} items){Style.RESET}")
         section_dir = os.path.join(download_dir, safe_section_name)
         os.makedirs(section_dir, exist_ok=True)
 
-        for item_idx, link in enumerate(links, 1):
-            is_last = (item_idx == len(links))
-            prefix = "└──" if is_last else "├──"
+        for item_idx, item in enumerate(items, 1):
+            is_last_item = (item_idx == len(items))
+            prefix = "└──" if is_last_item else "├──"
+            link = item['href']
+            mod_type = item['mod_type']
+            item_title = item['title']
+
+            # Friendly icon / label per module
+            type_label = {
+                'assign': '📝 [Assignment]',
+                'folder': '📁 [Folder]',
+                'page': '📄 [Page]',
+                'url': '🔗 [Link]',
+                'resource': '📄'
+            }.get(mod_type, '📄')
 
             try:
                 res = session.get(link, allow_redirects=True, stream=True)
 
-                # 1. Direct file download
+                # 1. Direct file download (e.g. forcedownload or direct redirect to a file)
                 cd = res.headers.get('Content-Disposition')
                 content_type = res.headers.get('Content-Type', '').lower()
                 is_html = 'text/html' in content_type
@@ -377,7 +475,7 @@ def main():
                         total_downloaded_bytes += byte_count
                     continue
 
-                # 2. Parse HTML page for folder archives or embedded files
+                # 2. Parse HTML page for folders, assignments, or embedded resources
                 page_soup = BeautifulSoup(res.content, 'html.parser')
 
                 # Check for Moodle mod/folder "Download folder" button
@@ -386,9 +484,11 @@ def main():
                     action = urljoin(link, folder_form.get('action', ''))
                     data = {inp.get('name'): inp.get('value', '') for inp in folder_form.find_all('input') if inp.get('name')}
 
-                    saved_name, byte_count = stream_download_file(session, action, section_dir, 
-                                                                  default_name=f"folder_{link.split('=')[-1]}.zip", 
-                                                                  method='POST', data=data)
+                    saved_name, byte_count = stream_download_file(
+                        session, action, section_dir, 
+                        default_name=f"{sanitize_filename(item_title)}.zip", 
+                        method='POST', data=data
+                    )
                     if saved_name:
                         size_str = f" {Style.DIM}[{format_size(byte_count)}]{Style.RESET}" if byte_count else ""
                         print(f"  {prefix} {Style.GREEN}[+] Downloaded Folder ZIP:{Style.RESET} {saved_name}{size_str}")
@@ -396,47 +496,41 @@ def main():
                         total_downloaded_bytes += byte_count
                     continue
 
-                # Check for embedded pluginfile.php links
-                file_elements = page_soup.find_all('a', href=re.compile(r'pluginfile\.php'))
-                for tag in page_soup.find_all(['iframe', 'embed'], src=re.compile(r'pluginfile\.php')):
-                    file_elements.append(tag)
-                for tag in page_soup.find_all('object', data=re.compile(r'pluginfile\.php')):
-                    file_elements.append(tag)
+                # Check for downloadable files inside assignment / page / resource
+                found_file_urls = find_downloadable_files_in_page(page_soup, link)
 
-                downloaded_in_link = False
-                seen_urls = set()
+                if found_file_urls:
+                    if mod_type in ['assign', 'page']:
+                        print(f"  {prefix} {Style.BOLD}{type_label} {item_title}{Style.RESET} ({len(found_file_urls)} file{'s' if len(found_file_urls) > 1 else ''}):")
+                    
+                    for sub_idx, file_url in enumerate(found_file_urls, 1):
+                        sub_prefix = "      └──" if sub_idx == len(found_file_urls) else "      ├──"
+                        
+                        # Ensure forcedownload=1 is set
+                        if '?forcedownload=1' not in file_url and '&forcedownload=1' not in file_url:
+                            file_url += "&forcedownload=1" if '?' in file_url else "?forcedownload=1"
 
-                for elem in file_elements:
-                    raw_file_url = elem.get('href') or elem.get('src') or elem.get('data')
-                    if not raw_file_url:
-                        continue
-
-                    file_url = urljoin(link, raw_file_url)
-                    if file_url in seen_urls:
-                        continue
-                    seen_urls.add(file_url)
-
-                    # Ensure forcedownload=1 is set
-                    if '?forcedownload=1' not in file_url and '&forcedownload=1' not in file_url:
-                        file_url += "&forcedownload=1" if '?' in file_url else "?forcedownload=1"
-
-                    saved_name, byte_count = stream_download_file(session, file_url, section_dir)
-                    if saved_name:
-                        size_str = f" {Style.DIM}[{format_size(byte_count)}]{Style.RESET}" if byte_count else ""
-                        print(f"  {prefix} {Style.GREEN}[+] Downloaded:{Style.RESET} {saved_name}{size_str}")
-                        total_downloaded_files += 1
-                        total_downloaded_bytes += byte_count
-                        downloaded_in_link = True
-
-                if not downloaded_in_link:
-                    print(f"  {prefix} {Style.YELLOW}[-] No downloadable content found{Style.RESET}")
+                        saved_name, byte_count = stream_download_file(session, file_url, section_dir)
+                        if saved_name:
+                            size_str = f" {Style.DIM}[{format_size(byte_count)}]{Style.RESET}" if byte_count else ""
+                            if mod_type in ['assign', 'page']:
+                                print(f"{sub_prefix} {Style.GREEN}[+] Downloaded:{Style.RESET} {saved_name}{size_str}")
+                            else:
+                                print(f"  {prefix} {Style.GREEN}[+] Downloaded:{Style.RESET} {saved_name}{size_str}")
+                            total_downloaded_files += 1
+                            total_downloaded_bytes += byte_count
+                else:
+                    if mod_type in ['assign', 'page']:
+                        print(f"  {prefix} {Style.DIM}{type_label} {item_title}: No attached files found{Style.RESET}")
+                    else:
+                        print(f"  {prefix} {Style.YELLOW}[-] No downloadable content found{Style.RESET}")
 
             except Exception as e:
-                print(f"  {prefix} {Style.RED}[!] Error:{Style.RESET} {e}")
+                print(f"  {prefix} {Style.RED}[!] Error processing {item_title}: {e}{Style.RESET}")
 
         print()
 
-    # Final Summary
+    # Final Summary Box
     print(f"{Style.CYAN}{'=' * 70}{Style.RESET}")
     print(f"{Style.BOLD}{Style.GREEN}   ALL DONE! DOWNLOAD COMPLETED{Style.RESET}")
     print(f"   {Style.BOLD}Total Files:{Style.RESET}  {total_downloaded_files}")
