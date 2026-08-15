@@ -1,6 +1,6 @@
 @echo off
 
-:: Set console colors (bright whight on blue background))
+:: Set console colors (bright white on blue background)
 color 9F
 
 echo ================================================================

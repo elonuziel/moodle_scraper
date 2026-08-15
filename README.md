@@ -31,8 +31,14 @@ A simple Python script to download all resources, presentations, documents, and 
 Double-click `run_downloader.bat` or run it from command prompt.
 
 ### Manual Python Execution
+Interactive mode:
 ```bash
 python moodle_downloader.py
+```
+
+Command-line (headless) mode:
+```bash
+python moodle_downloader.py --url "https://moodle.ruppin.ac.il/course/view.php?id=1234" --cookie "YOUR_MOODLESESSION_COOKIE" --output "./my_course_folder"
 ```
 
 ### What the script does:
