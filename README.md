@@ -95,6 +95,27 @@ python moodle_downloader.py --url "https://moodle.ruppin.ac.il/course/view.php?i
 
 Files are saved in a folder named `moodle_course_{ID}` with subfolders for each course section.
 
+## Project Structure
+
+The codebase is organized into modular components inside a dedicated `core/` folder:
+
+```
+moodle_scraper/
+├── core/
+│   ├── __init__.py      # Core package exports
+│   ├── __main__.py      # Enables execution via python -m core
+│   ├── auth.py          # Session setup & Playwright headless auto-login
+│   ├── cli.py           # CLI argument parsing, interactive prompts, & main workflow
+│   ├── downloader.py    # Parallel streaming downloads & ZIP extraction
+│   ├── scraper.py       # HTML parsing & activity link discovery
+│   └── utils.py         # Terminal styling, filename sanitization, & helpers
+├── moodle_downloader.py # Root entrypoint runner
+├── requirements.txt     # Python package dependencies
+├── run_downloader.bat   # Windows batch launcher
+└── run_downloader.ps1   # Windows PowerShell launcher
+```
+
+
 ## Dependencies
 
 - `requests==2.31.0` - HTTP connection pooling and file streaming
